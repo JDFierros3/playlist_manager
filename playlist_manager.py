@@ -1,5 +1,6 @@
 import configparser
 from pptx.util import Pt
+from pptx.util import inches
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, Listbox, MULTIPLE, Toplevel, Canvas, Scrollbar, Menu, StringVar
@@ -346,6 +347,8 @@ class PPTCombinerApp:
 
         if not os.path.exists(temp_directory):
             os.makedirs(temp_directory)
+        combined_ppt.slide_width = Inches(13.33)
+        combined_ppt.slide_height = Inches(7.5)
 
         for item in self.playlist:
             if os.path.exists(item):  # This is a song file
