@@ -1,6 +1,6 @@
 import configparser
 from pptx.util import Pt
-from pptx.util import inches
+from pptx.util import Inches
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, Listbox, MULTIPLE, Toplevel, Canvas, Scrollbar, Menu, StringVar
@@ -59,7 +59,7 @@ class ConfigManager:
             'song_title_slide_title': 'Let us sing:\n',
             'title_slide_trim_chars': '-,_,.ppt',
             'default_directory': '/home/church/Music/PaperlessHymnal(Vol.1-13)/4x3/',
-            'unoconv_path': '/usr/bin/unoconv'
+            'title_slide_directory': '/path/to/title/slides'
         }
         with open(self.config_path, 'w') as configfile:
             self.config.write(configfile)
@@ -110,15 +110,16 @@ class OptionsPage:
         self.title_slide_trim_chars_entry.insert(0, self.config_manager.get('title_slide_trim_chars'))
         self.title_slide_trim_chars_entry.grid(row=5, column=1, padx=10, pady=5)
 
-        Label(self.options_dialog, text="unoconv Path:").grid(row=6, column=0, padx=10, pady=5, sticky='w')
-        self.unoconv_path_entry = Entry(self.options_dialog, width=50)
-        self.unoconv_path_entry.insert(0, self.config_manager.get('unoconv_path'))
-        self.unoconv_path_entry.grid(row=6, column=1, padx=10, pady=5)
-
         self.add_song_title_slides_var = StringVar(value=self.config_manager.get('add_song_title_slides'))
 
-        Label(self.options_dialog, text="Add Song Title Slides:").grid(row=7, column=0, padx=10, pady=5, sticky='w')
-        Checkbutton(self.options_dialog, text="Enable", variable=self.add_song_title_slides_var, onvalue='true', offvalue='false').grid(row=7, column=1, padx=10, pady=5, sticky='w')
+        Label(self.options_dialog, text="Add Song Title Slides:").grid(row=6, column=0, padx=10, pady=5, sticky='w')
+        Checkbutton(self.options_dialog, text="Enable", variable=self.add_song_title_slides_var, onvalue='true', offvalue='false').grid(row=6, column=1, padx=10, pady=5, sticky='w')
+
+        Label(self.options_dialog, text="Title Slide Directory:").grid(row=7, column=0, padx=10, pady=5, sticky='w')
+        self.title_slide_directory_entry = Entry(self.options_dialog, width=50)
+        title_slide_directory = self.config_manager.get('title_slide_directory') or ""
+        self.title_slide_directory_entry.insert(0, title_slide_directory)
+        self.title_slide_directory_entry.grid(row=7, column=1, padx=10, pady=5)
 
         Button(self.options_dialog, text="Save", command=self.save_settings).grid(row=8, column=0, columnspan=2, pady=10)
 
@@ -129,8 +130,8 @@ class OptionsPage:
         self.config_manager.set('temp_directory', self.temp_directory_entry.get())
         self.config_manager.set('song_title_slide_title', self.song_title_slide_title_entry.get())
         self.config_manager.set('title_slide_trim_chars', self.title_slide_trim_chars_entry.get())
-        self.config_manager.set('unoconv_path', self.unoconv_path_entry.get())
         self.config_manager.set('add_song_title_slides', self.add_song_title_slides_var.get())
+        self.config_manager.set('title_slide_directory', self.title_slide_directory_entry.get())
         self.options_dialog.destroy()
 
 class PPTCombinerApp:
@@ -195,10 +196,18 @@ class PPTCombinerApp:
         self.add_to_playlist_button.pack(fill="x")
         
         # File list
+        #self.file_listbox = Listbox(left_frame, selectmode=tk.MULTIPLE, width=100, height=20)
+        self.shift_click_start_index = None  # Track the first click for shift selection
+
         self.file_listbox = Listbox(left_frame, selectmode=tk.BROWSE, width=100, height=20)
         self.file_listbox.pack(fill="both", expand=True)
         self.file_listbox.bind('<Double-1>', self.add_to_playlist)
         self.file_listbox.bind('<Control-1>', self.preview_slide)
+
+        # Update the file listbox to support multi-selection mode
+        # Allow multi-selection of PowerPoints for adding multiple files to the playlist
+        #self.add_to_playlist_button = tk.Button(left_frame, text="Add to Playlist", command=self.add_to_playlist)
+
         
         # Playlist
         self.playlist_label = tk.Label(right_frame, text="Playlist:", anchor="w")
@@ -219,6 +228,27 @@ class PPTCombinerApp:
         # Save and Convert button
         self.save_convert_button = tk.Button(right_frame, text="Save and Convert", command=self.save_and_convert)
         self.save_convert_button.pack(fill="x")
+
+    def on_shift_click_select(self, event):
+        """Handles shift-click selection to select multiple files in BROWSE mode."""
+        current_index = self.file_listbox.nearest(event.y)
+        if event.state & 0x0001:  # Check if Shift key is held
+            # Set the range if shift-clicking
+            if self.shift_click_start_index is not None:
+                # Select all files in the range from the first shift-click to the current click
+                start = min(self.shift_click_start_index, current_index)
+                end = max(self.shift_click_start_index, current_index)
+                self.file_listbox.selection_clear(0, tk.END)
+                for i in range(start, end + 1):
+                    self.file_listbox.selection_set(i)
+            else:
+                self.shift_click_start_index = current_index
+                self.file_listbox.selection_set(current_index)
+        else:
+            # Set initial click position if no Shift key is held
+            self.shift_click_start_index = current_index
+
+
 
     def load_order_of_service(self):
         for item in self.order_of_service:
@@ -263,48 +293,152 @@ class PPTCombinerApp:
         self.file_listbox.delete(0, tk.END)
         for file in files:
             self.file_listbox.insert(tk.END, os.path.basename(file))
-    
+
+
     def add_to_playlist(self, event=None):
-        if event:
-            selected_indices = [self.file_listbox.nearest(event.y)]
-        else:
-            selected_indices = self.file_listbox.curselection()
+        """Add all matching song parts (title slide, verses, and chorus) to the playlist in place of the first 'Song' entry."""
+        selected_index = self.file_listbox.curselection()
+        if not selected_index:
+            return
+    
+        # Get the selected file and determine its base song name
+        selected_file = self.filtered_ppt_files[selected_index[0]]
+        song_name = self.extract_song_name(selected_file)
+    
+        # Find all matching song parts in the directory
+        matching_files = [
+            file for file in self.all_ppt_files
+            if self.extract_song_name(file) == song_name
+        ]
+    
+        # Separate verses and chorus, and sort verses by their order in the filename
+        verses = sorted([f for f in matching_files if "verse" in f.lower()])
+        chorus = next((f for f in matching_files if "chorus" in f.lower()), None)
+
+        # Locate the first "Song" entry to replace in the playlist
+        song_index = next((i for i, item in enumerate(self.playlist) if item.lower() == "song"), None)
+        insert_position = song_index if song_index is not None else len(self.playlist)
+    
+        # Clear the current "Song" placeholder if found
+        if song_index is not None:
+            self.playlist.pop(song_index)
+  
+
+        # Add the hymn slides, inserting chorus after each verse
+        for verse in verses:
+            self.playlist.insert(insert_position, verse)
+            self.playlist_listbox.insert(insert_position, os.path.basename(verse))
+            insert_position += 1
         
-        for index in selected_indices:
-            file = self.filtered_ppt_files[index]
-            if "song" in [item.lower() for item in self.playlist]:
-                song_index = [i for i, item in enumerate(self.playlist) if item.lower() == "song"][0]
-                self.playlist[song_index] = file
-                self.playlist_listbox.delete(song_index)
-                self.playlist_listbox.insert(song_index, os.path.basename(file))
+            if chorus:
+                self.playlist.insert(insert_position, chorus)
+                self.playlist_listbox.insert(insert_position, os.path.basename(chorus))
+                insert_position += 1
+
+        self.refresh_playlist_display()
+
+
+
+    def find_title_slide(self, song_name):
+        """Search recursively for a title slide PNG file that matches the song name with '- Title' suffix."""
+        title_slide_dir = self.config_manager.get('title_slide_directory')
+        if not title_slide_dir or not os.path.isdir(title_slide_dir):
+            return None
+
+        # Expected title slide name
+        expected_title = f"{song_name} - Title.png"
+    
+        # Use os.walk to search recursively
+        for root, _, files in os.walk(title_slide_dir):
+            for file in files:
+                if file.lower() == expected_title.lower():
+                    return os.path.join(root, file)
+
+        # If no matching title slide is found, return None
+        return None
+
+
+    
+
+    def extract_song_name(self, file):
+        """Extract base name of the song from file name, ignoring verse/chorus distinctions."""
+        base_name = os.path.basename(file).split('.')[0]
+        # Removing verse or chorus identifiers, e.g., "SongName - Verse 1" to "SongName"
+        return base_name.rsplit('-', 1)[0].strip()
+
     
     def move_up(self):
-        selected_indices = self.playlist_listbox.curselection()
-        for index in selected_indices:
-            if index > 0:
-                self.playlist[index], self.playlist[index-1] = self.playlist[index-1], self.playlist[index]
-                self.playlist_listbox.delete(0, tk.END)
-                for item in self.playlist:
-                    self.playlist_listbox.insert(tk.END, os.path.basename(item))
-                self.playlist_listbox.select_set(index-1)
+        """Move the selected hymn group (verses and chorus) up in the playlist."""
+        selected_index = self.playlist_listbox.curselection()
+        if not selected_index:
+            return
+    
+        # Determine the base song name for the selected item
+        selected_file = self.playlist[selected_index[0]]
+        song_name = self.extract_song_name(selected_file)
+    
+        # Find all indices of items that match the song name
+        group_indices = [i for i, item in enumerate(self.playlist) if self.extract_song_name(item) == song_name]
+    
+        # Only proceed if the group can be moved up
+        if group_indices[0] > 0:
+            # Move each item in the group up by one position
+            for i in group_indices:
+                self.playlist[i], self.playlist[i-1] = self.playlist[i-1], self.playlist[i]
+        
+            # Update the playlist display
+            self.refresh_playlist_display()
+            self.playlist_listbox.select_set(group_indices[0] - 1)
 
     def move_down(self):
-        selected_indices = self.playlist_listbox.curselection()
-        for index in reversed(selected_indices):
-            if index < len(self.playlist) - 1:
-                self.playlist[index], self.playlist[index+1] = self.playlist[index+1], self.playlist[index]
-                self.playlist_listbox.delete(0, tk.END)
-                for item in self.playlist:
-                    self.playlist_listbox.insert(tk.END, os.path.basename(item))
-                self.playlist_listbox.select_set(index+1)
+        """Move the selected hymn group (verses and chorus) down in the playlist."""
+        selected_index = self.playlist_listbox.curselection()
+        if not selected_index:
+            return
     
-    def remove_from_playlist(self):
-        selected_indices = self.playlist_listbox.curselection()
-        for index in reversed(selected_indices):
-            del self.playlist[index]
+        # Determine the base song name for the selected item
+        selected_file = self.playlist[selected_index[0]]
+        song_name = self.extract_song_name(selected_file)
+    
+        # Find all indices of items that match the song name
+        group_indices = [i for i, item in enumerate(self.playlist) if self.extract_song_name(item) == song_name]
+    
+        # Only proceed if the group can be moved down
+        if group_indices[-1] < len(self.playlist) - 1:
+            # Move each item in the group down by one position
+            for i in reversed(group_indices):
+                self.playlist[i], self.playlist[i+1] = self.playlist[i+1], self.playlist[i]
+        
+            # Update the playlist display
+            self.refresh_playlist_display()
+            self.playlist_listbox.select_set(group_indices[0] + 1)
+
+    def refresh_playlist_display(self):
+        """Refreshes the playlist display in the Listbox."""
         self.playlist_listbox.delete(0, tk.END)
         for item in self.playlist:
             self.playlist_listbox.insert(tk.END, os.path.basename(item))
+
+    
+    def remove_from_playlist(self):
+        """Remove the selected hymn group (verses and chorus) from the playlist."""
+        selected_index = self.playlist_listbox.curselection()
+        if not selected_index:
+            return
+
+        # Determine the base song name for the selected item
+        selected_file = self.playlist[selected_index[0]]
+        song_name = self.extract_song_name(selected_file)
+    
+        # Find all indices of items that match the song name
+        group_indices = [i for i, item in enumerate(self.playlist) if self.extract_song_name(item) == song_name]
+    
+        # Remove items in the group from the playlist in reverse order to avoid index shifting
+        for i in reversed(group_indices):
+            del self.playlist[i]
+    
+        # Refresh the playlist display
+        self.refresh_playlist_display()
     
     def save_and_convert(self):
         desktop_path = str(Path.home() / "Desktop")
@@ -340,77 +474,86 @@ class PPTCombinerApp:
             messagebox.showerror("Error", f"Conversion failed: {e}")
             return None
         return pptx_path
-    
+
+
+
     def combine_presentations(self, save_path):
+        """Combine presentations, adding a title slide image if available, and save to save_path."""
         combined_ppt = Presentation()
         temp_directory = self.config_manager.get('temp_directory')
 
+        # Ensure temporary directory exists
         if not os.path.exists(temp_directory):
             os.makedirs(temp_directory)
+
+        # Set slide dimensions
         combined_ppt.slide_width = Inches(13.33)
         combined_ppt.slide_height = Inches(7.5)
 
+        # Loop through playlist items
+        title_added = False  # Track if title slide has been added for the current hymn
         for item in self.playlist:
-            if os.path.exists(item):  # This is a song file
-                pptx_file = self.convert_ppt_to_pptx(item)
-                if not pptx_file:
-                    return
-
-                # Add the song title slide if the option is enabled
-                if self.add_song_title_slides:
-                    song_title = os.path.basename(item).rsplit('.', 1)[0]
-                    for char in self.title_slide_trim_chars:
-                        song_title = song_title.rstrip(char)
-
-                    title_slide = combined_ppt.slides.add_slide(combined_ppt.slide_layouts[5])
-                    title_text_box = title_slide.shapes.add_textbox(0, 0, combined_ppt.slide_width, combined_ppt.slide_height)
-                    title_text_frame = title_text_box.text_frame
-                    title_text_frame.clear()
-                    p = title_text_frame.paragraphs[0]
-                    p.text = f"{self.song_title_slide_title}\n{song_title}"
-                    p.font.size = Pt(44)
-                    p.font.bold = True
-                    p.font.color.rgb = RGBColor(0, 0, 0)
-                    title_text_box.text_anchor = "middle"  # Center text vertically
-                    title_text_box.left = int((combined_ppt.slide_width - title_text_box.width) / 2)  # Center text horizontally
-
-                # Add the actual song slides
-                ppt = Presentation(pptx_file)
+            # If this is a hymn, add the title slide image only once before the first verse or chorus
+            if os.path.exists(item) and item.endswith(('.ppt', '.pptx')):
+                if not title_added:
+                    song_name = self.extract_song_name(item)
+                    title_slide_path = self.find_title_slide(song_name)
+                
+                    # Add title slide if it exists and hasn't been added yet
+                    if title_slide_path:
+                        self.add_image_slide(combined_ppt, title_slide_path)
+                        title_added = True  # Mark title as added for this hymn
+    
+                # Add the hymn's slides to the presentation
+                ppt = Presentation(item)
                 for slide in ppt.slides:
                     self.add_slide_to_presentation(combined_ppt, slide)
 
-            else:  # This is a service item
+            else:
+                # Reset title_added for non-hymn items
+                title_added = False
+    
+                # Add non-hymn slide with centered text and no placeholder
                 slide = combined_ppt.slides.add_slide(combined_ppt.slide_layouts[5])
-                text_box = slide.shapes.add_textbox(0, 0, combined_ppt.slide_width, combined_ppt.slide_height)
+
+                # Remove any placeholder elements ("Click to add title" boxes)
+                for shape in slide.shapes:
+                    if shape.is_placeholder:
+                        sp = slide.shapes._spTree.remove(shape._element)
+
+                # Add a text box with centered text
+                text_box = slide.shapes.add_textbox(
+                    Inches(1), Inches(1.5),  # Adjust positioning
+                    combined_ppt.slide_width - Inches(2), combined_ppt.slide_height - Inches(3)
+                )
                 text_frame = text_box.text_frame
                 text_frame.text = item
-                text_frame.paragraphs[0].font.size = Pt(44)
+                text_frame.paragraphs[0].font.size = Pt(80)
                 text_frame.paragraphs[0].font.bold = True
-                text_box.text_anchor = "middle"  # Center text vertically
-                text_box.left = int((combined_ppt.slide_width - text_box.width) / 2)  # Center text horizontally
+                text_box.text_anchor = "middle"  # Center text within text box
+                text_box.left = int((combined_ppt.slide_width - text_box.width) / 2)
+                text_box.top = int((combined_ppt.slide_height - text_box.height) / 2)  # Center vertically on slide
 
         combined_ppt.save(save_path)
         messagebox.showinfo("Success", f"Combined presentation saved to {save_path}")
+
+
+    def add_image_slide(self, presentation, image_path):
+        """Add an image as a full-slide background in the given presentation."""
+        slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+        img = Image.open(image_path)
+        image_stream = BytesIO()
+        img.save(image_stream, format='PNG')
+
+        # Add image to slide
+        slide.shapes.add_picture(image_stream, 0, 0, width=presentation.slide_width, height=presentation.slide_height)
+
 
     def add_slide_to_presentation(self, combined_ppt, slide):
         slide_copy = combined_ppt.slides.add_slide(combined_ppt.slide_layouts[5])
 
         for shape in slide.shapes:
-            if shape.has_text_frame:
-                text_box = slide_copy.shapes.add_textbox(shape.left, shape.top, shape.width, shape.height)
-                text_frame = text_box.text_frame
-                text_frame.clear()
-                for paragraph in shape.text_frame.paragraphs:
-                    new_paragraph = text_frame.add_paragraph()
-                    new_paragraph.text = paragraph.text
-                    new_paragraph.font.color.rgb = RGBColor(0, 0, 0)
-                    new_paragraph.font.size = paragraph.font.size
-                    new_paragraph.font.bold = paragraph.font.bold
-                    new_paragraph.font.italic = paragraph.font.italic
-                    new_paragraph.font.underline = paragraph.font.underline
-                    new_paragraph.font.name = paragraph.font.name
-
-            elif shape.shape_type == 13:  # Picture
+            if shape.shape_type == 13:  # Picture
                 image_stream = shape.image.blob
                 image_file = BytesIO(image_stream)
                 image = Image.open(image_file)
