@@ -492,13 +492,16 @@ class PPTCombinerApp:
 
         # Loop through playlist items
         title_added = False  # Track if title slide has been added for the current hymn
+        current_hymn = ""
         for item in self.playlist:
             # If this is a hymn, add the title slide image only once before the first verse or chorus
             if os.path.exists(item) and item.endswith(('.ppt', '.pptx')):
+                song_name = self.extract_song_name(item)
+                if current_hymn != song_name:
+                    title_added = False
+                current_hymn = song_name 
                 if not title_added:
-                    song_name = self.extract_song_name(item)
-                    title_slide_path = self.find_title_slide(song_name)
-                
+                    title_slide_path = self.find_title_slide(song_name)     
                     # Add title slide if it exists and hasn't been added yet
                     if title_slide_path:
                         self.add_image_slide(combined_ppt, title_slide_path)
@@ -508,10 +511,7 @@ class PPTCombinerApp:
                 ppt = Presentation(item)
                 for slide in ppt.slides:
                     self.add_slide_to_presentation(combined_ppt, slide)
-
             else:
-                # Reset title_added for non-hymn items
-                title_added = False
     
                 # Add non-hymn slide with centered text and no placeholder
                 slide = combined_ppt.slides.add_slide(combined_ppt.slide_layouts[5])
